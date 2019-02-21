@@ -180,7 +180,7 @@ class Discriminator(nn.Module):
             #nn.LeakyReLU(0.2, inplace=True),
             # state size. (ndf*8) x 4 x 4
             #nn.Conv2d(ndf * 8, 1, 4, 1, 0, bias=False),
-            nn.Sigmoid()
+            #nn.Sigmoid()
         )
 
     def forward(self, input):
@@ -188,8 +188,9 @@ class Discriminator(nn.Module):
             output = nn.parallel.data_parallel(self.main, input, range(self.ngpu))
         else:
             output = self.main(input)
+        output=output.mean(0)
 
-        return output.view(-1, 1).squeeze(1)
+        return output.view(1)
 
 
 netD = Discriminator(ngpu).to(device)
@@ -206,8 +207,10 @@ real_label = 1
 fake_label = 0
 
 # setup optimizer
-optimizerD = optim.Adam(netD.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
-optimizerG = optim.Adam(netG.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+#optimizerD = optim.Adam(netD.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+#optimizerG = optim.Adam(netG.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+optimizerD = optim.SGD(netD.parameters(),lr=opt.lr)
+optimizerG = optim.SGD(netG.parameters(), lr=opt.lr)
 
 for epoch in range(opt.niter):
     for i, data in enumerate(dataloader, 0):
@@ -216,40 +219,43 @@ for epoch in range(opt.niter):
         ###########################
         # train with real
         netD.zero_grad()
+
+        for p in netD.parameters():
+            p.requires_grad=True
+
+        for p in netD.parameters():
+            p.data.clamp_(-0.01,0.01)#jieduan
+
+
         real_cpu = data[0].to(device)
         batch_size = real_cpu.size(0)
-        label = torch.full((batch_size,), real_label, device=device)
 
-        output = netD(real_cpu)
-        errD_real = criterion(output, label)
+        errD_real = netD(real_cpu)
         errD_real.backward()
-        D_x = output.mean().item()
 
         # train with fake
         noise = torch.randn(batch_size, nz, 1, 1, device=device)#batchsize=64 nz=100
         fake = netG(noise)#产生维度*64*64的图片
-        label.fill_(fake_label)
-        output = netD(fake.detach())#fake.detach作用：使用D.background梯度时，不用求G的梯度，因为不需要
-        errD_fake = criterion(output, label)
+        errD_fake = netD(fake.detach())#fake.detach作用：使用D.background梯度时，不用求G的梯度，因为不需要
         errD_fake.backward()
-        D_G_z1 = output.mean().item()
-        errD = errD_real + errD_fake
+        errD = errD_real - errD_fake
         optimizerD.step()
 
         ############################
         # (2) Update G network: maximize log(D(G(z)))
         ###########################
+
+        for p in netD.parameters():
+            p.requires_grad=False
+
         netG.zero_grad()
-        label.fill_(real_label)  # fake labels are real for generator cost
-        output = netD(fake)
-        errG = criterion(output, label)
+        errG = netD(fake)
         errG.backward()
-        D_G_z2 = output.mean().item()
         optimizerG.step()
 
-        print('[%d/%d][%d/%d] Loss_D: %.4f Loss_G: %.4f D(x): %.4f D(G(z)): %.4f / %.4f'
+        print('[%d/%d][%d/%d] Loss_D: %.4f Loss_G: %.4f'
               % (epoch, opt.niter, i, len(dataloader),
-                 errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
+                 errD.item(), errG.item()))
         if i % 100 == 0:
             vutils.save_image(real_cpu,
                     '%s/img/real_samples.png' % opt.outf,
